@@ -11,6 +11,8 @@
             background-color: var(--tg-theme-bg-color, #f5f5f5);
             color: var(--tg-theme-text-color, #333333);
         }
+        .dropdown-scroll::-webkit-scrollbar { width: 6px; }
+        .dropdown-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
     </style>
 </head>
 <body class="p-5 font-sans">
@@ -18,24 +20,30 @@
         <h2 class="text-2xl font-bold text-gray-800 text-center mb-1">🚀 Настройка радара</h2>
         <p class="text-sm text-gray-500 text-center mb-6">Бот будет проверять маршрут каждый час</p>
 
-        <form id="radarForm" class="space-y-4">
-            <div>
-                <label class="block text-sm font-semibold text-gray-700 mb-1">Откуда (IATA или город):</label>
-                <input type="text" id="origin" required placeholder="Например: MOW" 
-                       class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 uppercase text-gray-800">
+        <form id="radarForm" class="space-y-4 relative">
+            
+            <div class="relative">
+                <label class="block text-sm font-semibold text-gray-700 mb-1">Откуда (Город или Страна):</label>
+                <input type="text" id="originInput" required placeholder="Например: Москва" autocomplete="off"
+                       class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-800">
+                <ul id="originList" class="absolute z-10 w-full bg-white hidden shadow-lg rounded-xl mt-1 max-h-48 overflow-y-auto dropdown-scroll border border-gray-100"></ul>
             </div>
-            <div>
-                <label class="block text-sm font-semibold text-gray-700 mb-1">Куда (IATA, город, страна):</label>
-                <input type="text" id="destination" required placeholder="Например: VN" 
-                       class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 uppercase text-gray-800">
+
+            <div class="relative">
+                <label class="block text-sm font-semibold text-gray-700 mb-1">Куда (Город или Страна):</label>
+                <input type="text" id="destinationInput" required placeholder="Например: Вьетнам" autocomplete="off"
+                       class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-800">
+                <ul id="destinationList" class="absolute z-10 w-full bg-white hidden shadow-lg rounded-xl mt-1 max-h-48 overflow-y-auto dropdown-scroll border border-gray-100"></ul>
             </div>
+
             <div>
                 <label class="block text-sm font-semibold text-gray-700 mb-1">Максимальная цена (руб):</label>
-                <input type="number" id="maxPrice" required placeholder="30000" 
+                <input type="number" id="maxPrice" required placeholder="Например: 30000" min="1000"
                        class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-800">
             </div>
+
             <button type="submit" id="submitBtn" 
-                    class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 rounded-xl shadow-lg mt-2">
+                    class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 rounded-xl shadow-lg mt-2 transition">
                 🔔 Запустить мониторинг
             </button>
         </form>
@@ -44,43 +52,108 @@
     <script>
         const tg = window.Telegram.WebApp;
         tg.expand();
-
-        // Автоматически берем ID юзера из Телеграма
         const userId = tg.initDataUnsafe?.user?.id || 123456789;
+
+        let originData = { iata: '', type: '' };
+        let destinationData = { iata: '', type: '' };
+
+        async function fetchPlaces(query) {
+            if (query.length < 2) return [];
+            try {
+                const res = await fetch(`https://autocomplete.travelpayouts.com/places2?term=${query}&locale=ru&types[]=city,country`);
+                return await res.json();
+            } catch (e) {
+                return [];
+            }
+        }
+
+        function setupAutocomplete(inputId, listId, dataStore) {
+            const input = document.getElementById(inputId);
+            const list = document.getElementById(listId);
+
+            input.addEventListener('input', async (e) => {
+                const val = e.target.value;
+                dataStore.iata = ''; 
+                
+                if (val.length < 2) {
+                    list.classList.add('hidden');
+                    return;
+                }
+
+                const places = await fetchPlaces(val);
+                list.innerHTML = '';
+                
+                if (places.length > 0) {
+                    places.forEach(place => {
+                        const li = document.createElement('li');
+                        li.className = 'px-4 py-3 hover:bg-blue-50 cursor-pointer text-sm text-gray-700 border-b border-gray-50 last:border-0';
+                        const placeName = place.type === 'country' ? place.name : `${place.name}, ${place.country_name}`;
+                        li.innerHTML = `<strong>${placeName}</strong> <span class="text-gray-400 text-xs ml-1">${place.code}</span>`;
+                        
+                        li.onclick = () => {
+                            input.value = placeName;
+                            dataStore.iata = place.code;
+                            dataStore.type = place.type;
+                            list.classList.add('hidden');
+                        };
+                        list.appendChild(li);
+                    });
+                    list.classList.remove('hidden');
+                } else {
+                    list.classList.add('hidden');
+                }
+            });
+
+            document.addEventListener('click', (e) => {
+                if (e.target !== input) list.classList.add('hidden');
+            });
+        }
+
+        setupAutocomplete('originInput', 'originList', originData);
+        setupAutocomplete('destinationInput', 'destinationList', destinationData);
 
         document.getElementById('radarForm').addEventListener('submit', async function(e) {
             e.preventDefault();
+
+            if (!originData.iata) {
+                tg.showAlert('Пожалуйста, выберите город или страну отправления из выпадающего списка.');
+                return;
+            }
+            if (!destinationData.iata) {
+                tg.showAlert('Пожалуйста, выберите город или страну назначения из выпадающего списка.');
+                return;
+            }
+
             const submitBtn = document.getElementById('submitBtn');
             submitBtn.disabled = true;
             submitBtn.innerText = 'Сохранение...';
 
-            const data = {
+            const payload = {
                 telegram_user_id: userId,
-                origin: document.getElementById('origin').value.trim().toUpperCase(),
-                destination: document.getElementById('destination').value.trim().toUpperCase(),
+                origin: originData.iata,
+                destination: destinationData.iata,
                 max_price: parseInt(document.getElementById('maxPrice').value)
             };
 
-            // ВРЕМЕННАЯ ЗАГЛУШКА. Сюда мы вставим ссылку на вебхук n8n позже!
             const n8nWebhookUrl = 'ЗАМЕНИТЬ_НА_URL_ВЕБХУКА_ИЗ_N8N';
 
             try {
                 const response = await fetch(n8nWebhookUrl, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(data)
+                    body: JSON.stringify(payload)
                 });
 
                 if (response.ok) {
                     tg.showAlert('Радар успешно запущен!');
                     tg.close();
                 } else {
-                    alert('Ошибка при сохранении радара.');
+                    tg.showAlert('Ошибка при сохранении радара.');
                     submitBtn.disabled = false;
                     submitBtn.innerText = '🔔 Запустить мониторинг';
                 }
             } catch (error) {
-                alert('Не удалось связаться с сервером бота.');
+                tg.showAlert('Форма готова! (Сейчас она не отправляется, так как мы еще не подключили n8n)');
                 submitBtn.disabled = false;
                 submitBtn.innerText = '🔔 Запустить мониторинг';
             }
